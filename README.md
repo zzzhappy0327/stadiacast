@@ -135,6 +135,9 @@ clear the quarantine flag of both with
 
 **From PyPI**, with Python 3.11 or newer: `pip install 'stadiacast[ble,audio,gamepad]'` (or
 `uv tool install 'stadiacast[ble,audio,gamepad]'`); the extras are optional, see below.
+On Windows, a Mobile Hotspot already holds UDP port 53. `pip install "stadiacast[windivert]"`
+and an Administrator terminal let the default `--dns-mode auto` answer the controller there
+without pointing the PC's own DNS at `127.0.0.1` ([docs/setup.md](docs/setup.md#windows-mobile-hotspot)).
 
 **From source**, with [uv](https://docs.astral.sh/uv/):
 
@@ -150,7 +153,8 @@ provisioning, `audio` and `gamepad` are the [headset audio](#headset-audio) capt
 [virtual gamepad](#virtual-gamepad-windows), and `passthrough` lets the receiver fetch the
 controller's configuration (`stadiaconfig`) from Google for it, which only happens when
 `clients3.google.com` is redirected to the receiver (not by default).
-`tools/start_receiver.sh` finds the virtualenv on its own.
+`tools/start_receiver.sh` finds the virtualenv on its own. The `windivert` extra is Windows-only
+and is what the Mobile Hotspot capture above installs; other systems ignore it.
 
 ## Input
 

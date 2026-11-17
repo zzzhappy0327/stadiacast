@@ -66,7 +66,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: uv venv
-      - run: uv pip install --resolution lowest-direct -e ".[ble,passthrough,audio,gamepad]" --group dev
+      - run: uv pip install --resolution lowest-direct -e ".[ble,passthrough,audio,gamepad,windivert]" --group dev
       - run: uv run --no-sync pytest -q
       - run: uv run --no-sync python -m stadiacast.schema_compiler --check
 

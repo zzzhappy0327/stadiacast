@@ -89,6 +89,52 @@ starts it again at the next boot). `--no-sntp` runs without the SNTP server inst
 firmware also takes the time from the receiver's HTTP `Date` header and `GetCurrentTime`
 replies ([protocol.md](protocol.md#8-time)).
 
+### Windows Mobile Hotspot
+
+Windows Mobile Hotspot (Internet Connection Sharing, the SharedAccess service) listens on UDP
+53 on the hotspot gateway, usually `192.168.137.1`, and forwards the clients' queries to the
+PC's own resolvers. The sink cannot bind that port, so the controller's queries never reach it.
+Pointing the PC's own Wi-Fi adapter at `127.0.0.1` makes SharedAccess forward to the sink, and
+it also leaves the PC without DNS once the receiver stops. Stadiacast does not do that, and it
+does not turn the hotspot off or edit a DNS server.
+
+`--dns-mode auto` (the default) still binds UDP and TCP 53 wherever that works, on every
+system. On Windows, when the UDP bind fails because the port is already owned (access denied
+or address already in use), the sink captures **inbound** UDP packets to port 53 with
+[WinDivert](https://reqrypt.org/windivert.html) and answers the redirected names itself.
+Every other captured packet is sent back inbound, unchanged, so the hotspot's own proxy still
+resolves ordinary names. `--dns-mode udp` never captures. `--dns-mode windivert` captures
+immediately and does not try the socket; on Linux and macOS that flag is an error.
+
+The capture is a Windows-only extra, and opening it loads a kernel driver, which needs an
+Administrator terminal. pydivert, the library the extra installs, is licensed separately
+(LGPL-3.0-or-later OR GPL-2.0-or-later) and is not part of Stadiacast's MIT code.
+
+```powershell
+pip install "stadiacast[windivert]"
+# Administrator PowerShell
+stadiacast --preset live --dns-upstream 192.168.1.1 --advertise-ip 192.168.137.1
+```
+
+`--advertise-ip` should be the hotspot gateway. Left unset, the receiver uses the address of
+the interface that routes to `--controller-ip`, which is often the upstream adapter, and the
+controller cannot reach that. `--dns-upstream` is still required: it is what spawns the sink,
+and it is where the UDP mode forwards names that are not redirected.
+
+The filter is `inbound and udp.DstPort == 53` on WinDivert's default network layer, which is
+packets addressed to this PC. Queries the controller sends to the hotspot gateway are in that
+set, and they are taken before SharedAccess answers them. Queries the firmware sends straight
+to `8.8.8.8:53` are forwarded by the hotspot, not addressed to this PC. WinDivert delivers
+forwarded packets on its forward layer, not as inbound on the default layer, so this filter
+does not see them. That is WinDivert's layer model. It has not been run against a controller
+on a Windows hotspot, and this program does not open the forward layer: injecting replies
+there is a different path, and a wrong reinjection drops or mis-NATs the hotspot's traffic.
+`--clearcut-block dns` still has the firmware fall back to `8.8.8.8` for those names. Prefer
+`--clearcut-block tls`.
+
+A `--port` other than 53 does not fall back to the capture. A sink asked to bind some other
+port, and refused, exits. It does not start intercepting the hotspot.
+
 On Windows, when the controller sits on another subnet than the PC (a dedicated Wi-Fi network
 routed to it), Windows Defender Firewall drops the inbound traffic by default: allow UDP 53
 and 123, TCP 443 and the UDP range of the WebRTC ports (40000 and up, two per controller). A

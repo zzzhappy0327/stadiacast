@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- On Windows, the DNS sink can answer a Mobile Hotspot without pointing the PC's own adapter at
+  `127.0.0.1`. `--dns-mode auto` (the default) still binds UDP port 53 where that works, including
+  on Linux and macOS. On Windows, when that bind fails because the port is already owned (the
+  hotspot's SharedAccess service), the sink captures inbound UDP/53 with WinDivert and answers the
+  redirected names itself. Other captured packets are sent on unchanged. `--dns-mode udp` never
+  captures, and `--dns-mode windivert` captures immediately; that mode is an error on Linux and
+  macOS. The driver is the optional `windivert` extra (`pip install "stadiacast[windivert]"`),
+  Windows-only, and the receiver has to be started from an Administrator terminal. Queries the
+  controller sends straight to `8.8.8.8` are forwarded by the hotspot and are not in this filter;
+  that limit is WinDivert's layer model and has not been tried on hardware.
+
 ## [1.2.1] - 2026-11-16
 
 A virtual Stadia Controller on Linux, with the Assistant and Capture buttons that an Xbox pad

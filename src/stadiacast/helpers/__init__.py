@@ -1,5 +1,8 @@
 """Helper processes the receiver spawns next to itself: a redirecting DNS server and an SNTP server.
 
+The DNS server binds port 53.  On Windows, when that port is already owned, ``--dns-mode auto``
+captures inbound UDP 53 with WinDivert instead (``dns_windivert``); other systems never do.
+
 Both write JSON Lines logs into the run directory.  They are separate processes because they
 bind privileged-looking ports (53, 123) and must keep answering while the receiver's event loop
 is busy.  This module is their launcher: :func:`helper_command` builds the command line the

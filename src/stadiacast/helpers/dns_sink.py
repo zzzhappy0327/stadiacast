@@ -4,6 +4,11 @@ Point the controller at it: the Google names the receiver stands in for resolve 
 every other name is forwarded to the real upstream resolver and the answer relayed.  The redirect
 is for whoever asks, so a device that needs the real Google services keeps its own resolver.
 
+``--dns-mode auto`` (the default) is this UDP server.  On Windows, when UDP port 53 cannot be
+bound because some other program already owns it (Mobile Hotspot's SharedAccess service does),
+auto captures those queries with WinDivert instead of exiting.  ``--dns-mode udp`` never does
+that, and ``--dns-mode windivert`` does not try the socket.  Linux and macOS stay on the socket.
+
     python -m stadiacast.helpers.dns_sink --upstream 192.168.1.1 --log captures/x/dns.jsonl \\
         --redirect '*.googleapis.com' --redirect googleapis.com
 
@@ -25,11 +30,14 @@ import fnmatch
 import socket
 import socketserver
 import struct
+import sys
 import threading
 import time
 from collections.abc import Sequence
 from typing import Any
 
+from stadiacast.errors import SetupError
+from stadiacast.helpers.dns_divert import DNS_MODES, WINDIVERT_FILTER, select_dns_transport
 from stadiacast.helpers.dnswire import (
     RCODE_FORMERR,
     RCODE_NXDOMAIN,
@@ -185,6 +193,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--listen", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=53)
+    ap.add_argument(
+        "--dns-mode",
+        choices=DNS_MODES,
+        default="auto",
+        help="auto: bind this port, and on Windows fall back to WinDivert when UDP 53 is already owned "
+        "(Mobile Hotspot). udp: the socket only. windivert: capture inbound UDP 53, Windows only",
+    )
     ap.add_argument("--upstream", default="192.168.1.1", help="real resolver to forward to")
     ap.add_argument("--upstream-port", type=int, default=53)
     ap.add_argument("--redirect-ip", default=None, help="IP to answer redirected names with (default: this host)")
@@ -210,34 +225,73 @@ def main(argv: Sequence[str] | None = None) -> int:
         ap.error(f"no route to {args.upstream}; pass --redirect-ip")
     patterns = args.redirect or list(DEFAULT_REDIRECTS)
     log = EventLog(args.log)
-    resolver = Resolver(
-        log,
-        args.upstream,
-        redirect_ip,
-        patterns,
-        log_only=args.log_only,
-        controller_ip=args.controller_ip,
-        nxdomain=args.nxdomain,
-        upstream_port=args.upstream_port,
-    )
+    try:
+        resolver = Resolver(
+            log,
+            args.upstream,
+            redirect_ip,
+            patterns,
+            log_only=args.log_only,
+            controller_ip=args.controller_ip,
+            nxdomain=args.nxdomain,
+            upstream_port=args.upstream_port,
+        )
+        return _run(args, log, resolver, redirect_ip, patterns)
+    finally:
+        log.close()
+
+
+def _run(
+    args: argparse.Namespace,
+    log: EventLog,
+    resolver: Resolver,
+    redirect_ip: str,
+    patterns: Sequence[str],
+) -> int:
+    """Bind the UDP sink, or capture with WinDivert when that is what the mode asks for."""
+    if args.dns_mode == "windivert":
+        return _serve_windivert(args, log, resolver, redirect_ip, patterns)
     try:
         udp = _UdpServer((args.listen, args.port), _UdpHandler)
+    except OSError as e:
+        # Only the UDP socket decides the fallback.  TCP is tried after it, and a TCP failure
+        # once UDP is bound is a different fault: capturing would take queries the socket can answer.
+        if _fallback_or_fail(args, log, e) != "windivert":
+            return 1
+        return _serve_windivert(args, log, resolver, redirect_ip, patterns)
+    try:
         tcp = _TcpServer((args.listen, args.port), _TcpHandler)
     except OSError as e:
+        udp.server_close()
         hint = bind_hint(args.port, "DNS", e)
         log("bind_failed", listen=f"{args.listen}:{args.port}", error=hint)
-        log.close()
         return 1
+    return _serve_udp(args, log, resolver, redirect_ip, patterns, udp, tcp)
+
+
+def _start_fields(args: argparse.Namespace, redirect_ip: str, patterns: Sequence[str], mode: str) -> dict[str, Any]:
+    return {
+        "listen": f"{args.listen}:{args.port}",
+        "upstream": args.upstream,
+        "redirect_ip": redirect_ip,
+        "redirect_patterns": patterns,
+        "log_only": args.log_only,
+        "nxdomain": args.nxdomain or [],
+        "mode": mode,
+    }
+
+
+def _serve_udp(
+    args: argparse.Namespace,
+    log: EventLog,
+    resolver: Resolver,
+    redirect_ip: str,
+    patterns: Sequence[str],
+    udp: _UdpServer,
+    tcp: _TcpServer,
+) -> int:
     udp.resolver = tcp.resolver = resolver  # type: ignore[attr-defined]
-    log(
-        "start",
-        listen=f"{args.listen}:{args.port}",
-        upstream=args.upstream,
-        redirect_ip=redirect_ip,
-        redirect_patterns=patterns,
-        log_only=args.log_only,
-        nxdomain=args.nxdomain or [],
-    )
+    log("start", **_start_fields(args, redirect_ip, patterns, "udp"))
     threading.Thread(target=tcp.serve_forever, daemon=True).start()
     try:
         udp.serve_forever()
@@ -247,8 +301,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         udp.server_close()
         tcp.shutdown()
         tcp.server_close()
-        log.close()
     return 0
+
+
+def _serve_windivert(
+    args: argparse.Namespace, log: EventLog, resolver: Resolver, redirect_ip: str, patterns: Sequence[str]
+) -> int:
+    """Capture instead of binding.  Imported here so a UDP run never loads the Windows module's driver."""
+    from stadiacast.helpers.dns_windivert import serve_windivert
+
+    try:
+        # Platform and port, before the driver is opened.  auto reaches this only after the UDP
+        # socket was refused; the check is the same one explicit windivert has to pass.
+        select_dns_transport("windivert", sys.platform, args.port)
+    except SetupError as e:
+        log("windivert_unavailable", error=str(e))
+        return 1
+    log("start", filter=WINDIVERT_FILTER, **_start_fields(args, redirect_ip, patterns, "windivert"))
+    return serve_windivert(resolver, log)
+
+
+def _fallback_or_fail(args: argparse.Namespace, log: EventLog, exc: OSError) -> str | None:
+    """``windivert`` when this bind failure is the Windows port-53 case, else log it and return None.
+
+    The original error is reported as ``bind_failed`` for every other failure, on every system.
+    It is not replaced with a capture.
+    """
+    try:
+        chosen = select_dns_transport(args.dns_mode, sys.platform, args.port, exc)
+    except OSError:
+        hint = bind_hint(args.port, "DNS", exc)
+        log("bind_failed", listen=f"{args.listen}:{args.port}", error=hint)
+        return None
+    log(
+        "dns_mode_fallback",
+        listen=f"{args.listen}:{args.port}",
+        error=str(exc),
+        note=(
+            "UDP 53 is already owned, on Windows normally by Mobile Hotspot (SharedAccess); capturing it with WinDivert"
+        ),
+    )
+    return chosen
 
 
 if __name__ == "__main__":
