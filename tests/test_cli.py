@@ -73,6 +73,7 @@ def test_module_entry_point_prints_help():
         timeout=60,
     )
     assert "--preset {live}" in out.stdout and "game session" in out.stdout
+    assert "--dns-mode {auto,udp,windivert}" in out.stdout
 
 
 def test_version_flag(capsys):

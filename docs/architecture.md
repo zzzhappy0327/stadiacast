@@ -15,12 +15,19 @@ that has no interpreter to run `-m` with, the executable itself with `--helper <
 | process | module | why separate |
 |---|---|---|
 | the receiver | `stadiacast.cli` → `stadiacast.receiver` | HTTPS/HTTP listeners, every controller's UDP sockets, the event log |
-| DNS sink | `stadiacast.helpers.dns_sink` (wire format: `helpers.dnswire`) | binds port 53; answers `*.googleapis.com` and the `--dns-redirect` names with the receiver's IP, forwards everything else |
+| DNS sink | `stadiacast.helpers.dns_sink` (wire format: `helpers.dnswire`; Windows capture: `helpers.dns_windivert`) | binds port 53; answers `*.googleapis.com` and the `--dns-redirect` names with the receiver's IP, forwards everything else. On Windows, if UDP 53 is already owned, `--dns-mode auto` captures inbound UDP 53 with WinDivert instead |
 | SNTP server | `stadiacast.helpers.sntp_server` | binds port 123; answers `time.google.com` with the host clock |
 
 The helpers are plain blocking servers in their own processes so they keep answering while the
 receiver's event loop is busy, and so the privileged-looking ports are isolated. The receiver
 watches them: one that exits is logged (`helper_exited`) with the last lines it wrote.
+
+On Windows the DNS helper can run without a socket. Mobile Hotspot already binds UDP 53, so
+`--dns-mode auto` opens a WinDivert handle on inbound UDP 53 (`dns_windivert`) and answers the
+redirected names from the packets it takes. Queries it does not answer are sent back inbound.
+The handle is closed when the helper is signalled, which is what unblocks its receive. Linux
+and macOS never take that path. Forwarded packets (a query the controller sends straight to
+`8.8.8.8`) are not in that filter; see the setup guide.
 
 Two more commands run on their own: `stadiacast-provision` (`ble_provisioner.py`) sends a
 controller in Bluetooth setup mode its Wi-Fi credentials, and `stadiacast-show-input`

@@ -47,6 +47,10 @@ class Config:
     # -- helper processes ------------------------------------------------------------------
     dns_upstream: str | None = None  # spawn the DNS sink forwarding to this resolver
     dns_redirect: tuple[str, ...] = ("time.google.com",)  # extra names the DNS sink points at us
+    # auto | udp | windivert.  auto is the UDP sink, and on Windows a refusal to bind UDP 53
+    # (Mobile Hotspot already owns it) switches to WinDivert.  udp never switches.  windivert
+    # is the capture, and it is refused on anything but Windows.  The live preset leaves this alone.
+    dns_mode: str = "auto"
     sntp: bool = False  # spawn the SNTP server on UDP 123
 
     # -- boot-time endpoints ---------------------------------------------------------------

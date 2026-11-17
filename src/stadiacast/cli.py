@@ -15,6 +15,7 @@ from stadiacast.config import AUDIO_APPLICATIONS, PRESETS, Config
 from stadiacast.errors import SetupError
 from stadiacast.game_session import GAME_FRAMINGS, GAME_KEY_MAX, HAPTICS_WATCHDOG_S
 from stadiacast.helpers import HELPER_FLAG, run_helper
+from stadiacast.helpers.dns_divert import WINDIVERT_WINDOWS_ONLY
 from stadiacast.ojd_gamepad import DEFAULT_PROFILE, PROFILES
 from stadiacast.receiver import Receiver
 from stadiacast.rtc import WIRE_ID_DC_RPC_DISPLAY, wire_id_valid
@@ -142,6 +143,14 @@ def build_parser(preset: str | None = None) -> argparse.ArgumentParser:
 
     g = ap.add_argument_group("helper processes")
     g.add_argument("--dns-upstream", default=None, help="spawn the DNS sink forwarding to this resolver")
+    g.add_argument(
+        "--dns-mode",
+        choices=("auto", "udp", "windivert"),
+        default="auto",
+        help="auto (default): the DNS sink binds port 53, and on Windows, if Mobile Hotspot already owns "
+        "UDP 53, captures those queries with WinDivert instead. udp: bind the port and do not fall back. "
+        "windivert: WinDivert only, which needs Windows, an Administrator terminal and the windivert extra",
+    )
     g.add_argument(
         "--dns-redirect",
         default="time.google.com",
@@ -412,6 +421,10 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
     a = ap.parse_args(argv)
     if not 0 < a.rumble_refresh < HAPTICS_WATCHDOG_S:
         ap.error(f"--rumble-refresh must be > 0 and < {HAPTICS_WATCHDOG_S:g} s (the haptics watchdog)")
+    if a.dns_mode == "windivert" and sys.platform != "win32":
+        ap.error(WINDIVERT_WINDOWS_ONLY)
+    if a.dns_mode == "windivert" and not a.dns_upstream:
+        ap.error("--dns-mode windivert needs --dns-upstream: the DNS sink is what opens the capture")
     if a.start_game and len(a.start_game.encode()) > GAME_KEY_MAX:
         ap.error(f"--start-game: the key is limited to {GAME_KEY_MAX} bytes")
     if not wire_id_valid(a.rpc_wire_id):
@@ -451,6 +464,7 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
         idle_timeout=a.idle_timeout,
         dns_upstream=a.dns_upstream,
         dns_redirect=_csv(a.dns_redirect),
+        dns_mode=a.dns_mode,
         sntp=a.sntp,
         stadiaconfig=a.stadiaconfig,
         clearcut_block=a.clearcut_block,

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 import traceback
 from typing import Any
@@ -34,6 +35,7 @@ from stadiacast.config import CLEARCUT_HOSTS, Config
 from stadiacast.controller import ControllerSession
 from stadiacast.errors import SetupError
 from stadiacast.helpers import DNS_SINK, SNTP_SERVER, helper_command
+from stadiacast.helpers.dns_divert import WINDIVERT_WINDOWS_ONLY
 from stadiacast.http_server import HttpRequest, HttpResponse, HttpServer
 from stadiacast.log import EventLog
 from stadiacast.netutil import bind_hint, fetch_upstream, is_loopback, local_ip_towards
@@ -265,10 +267,13 @@ class Receiver:
 
     async def _start_dns(self) -> None:
         assert self.cfg.log_dir is not None and self.cfg.dns_upstream is not None and self.cfg.advertise_ip is not None
+        if self.cfg.dns_mode == "windivert" and sys.platform != "win32":
+            raise SetupError(WINDIVERT_WINDOWS_ONLY)
         patterns = ["*.googleapis.com", "googleapis.com", *self.cfg.dns_redirect]
         args = [
             "--upstream", self.cfg.dns_upstream, "--redirect-ip", self.cfg.advertise_ip,
-            "--controller-ip", self.cfg.controller_ip, "--log", os.path.join(self.cfg.log_dir, "dns.jsonl"),
+            "--controller-ip", self.cfg.controller_ip, "--dns-mode", self.cfg.dns_mode,
+            "--log", os.path.join(self.cfg.log_dir, "dns.jsonl"),
         ]  # fmt: skip
         args.extend(arg for pat in patterns for arg in ("--redirect", pat))
         nxdomain: list[str] = []
@@ -286,6 +291,7 @@ class Receiver:
             redirect_ip=self.cfg.advertise_ip,
             redirect=patterns,
             nxdomain=nxdomain,
+            dns_mode=self.cfg.dns_mode,
         )
 
     async def _start_sntp(self) -> None:
